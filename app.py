@@ -681,7 +681,7 @@ def get_supabase_admin_client():
 
 def get_cookie_controller():
     if AUTH_IMPORT_ERROR is not None:
-        st.error("Session persistence requires streamlit-authenticator.")
+        st.error(f"Authentication import failed: {AUTH_IMPORT_ERROR!r}")
         st.code("pip install streamlit-authenticator")
         st.stop()
 
