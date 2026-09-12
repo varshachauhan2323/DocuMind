@@ -60,13 +60,23 @@ except ImportError:
     CrossEncoder = None
 
 try:
-    from streamlit_authenticator import Authenticate, Hasher, LoginError
+    # CookieController is the one piece of streamlit-authenticator we still
+    # need: an encrypted browser cookie so a Supabase session can survive
+    # closing/reopening the app on the same device. Credential checking
+    # (Authenticate/Hasher) is no longer used — Supabase Auth now owns
+    # signup/login/password hashing/verification.
+    from streamlit_authenticator import CookieController
     AUTH_IMPORT_ERROR = None
 except ImportError as error:
-    Authenticate = None
-    Hasher = None
-    LoginError = Exception
+    CookieController = None
     AUTH_IMPORT_ERROR = error
+
+try:
+    from supabase import create_client
+    SUPABASE_IMPORT_ERROR = None
+except ImportError as error:
+    create_client = None
+    SUPABASE_IMPORT_ERROR = error
 
 # =====================================================
 # CUSTOM CSS
@@ -200,6 +210,71 @@ st.markdown("""
         header[data-testid="stHeader"]::after { right: 2.9rem; font-size: 0.56rem; padding: 0.28rem 0.4rem; }
     }
     hr { border-color: rgba(148,163,184,0.25); }
+
+    /* =====================================================
+       MOBILE RESPONSIVENESS (320px–768px)
+       Generic, structural rules only — no branding/color
+       changes, no touching desktop layout above 768px.
+       ===================================================== */
+
+    /* Never let anything force horizontal scroll of the page. */
+    html, body, .stApp { max-width: 100vw; overflow-x: hidden; }
+
+    @media (max-width: 768px) {
+        /* Every st.columns(...) row (auth card ratio, quick-action
+           buttons, info cards, compare-mode selectors) stacks to a
+           single column instead of squeezing into narrow slivers. */
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 0 !important;
+        }
+
+        .hero-container { padding: 1rem 1.1rem 1.2rem; border-radius: 16px; }
+        .hero-title { font-size: 1.65rem; letter-spacing: -0.5px; }
+        .hero-subtitle { font-size: 0.95rem; }
+        .hero-description { font-size: 0.88rem; }
+        .hero-capabilities { font-size: 0.68rem; }
+
+        .welcome-card { padding: 22px 16px; border-radius: 16px; }
+        .welcome-title { font-size: 1.4rem; }
+        .welcome-text { font-size: 0.95rem; }
+
+        .info-card { min-height: 0; padding: 16px; }
+        .info-title { font-size: 1.05rem; }
+        .info-text { font-size: 0.9rem; }
+
+        /* Touch targets: buttons and inputs comfortably tappable. */
+        .stButton button, div[data-testid="stForm"] button {
+            min-height: 44px;
+            font-size: 0.95rem;
+            width: 100%;
+        }
+        div[data-testid="stForm"] { padding: 1rem 1rem 1.1rem; }
+        .stTextInput input, .stSelectbox div[data-baseweb="select"] {
+            min-height: 44px;
+            font-size: 0.95rem;
+        }
+
+        /* Chat messages, citations, and any wide block (tables,
+           retrieval-detail dumps) scroll within themselves instead of
+           blowing out the page width. */
+        [data-testid="stChatMessage"] { max-width: 100%; }
+        [data-testid="stChatMessageContent"] { word-break: break-word; }
+        .stMarkdown table, div[data-testid="stExpander"] {
+            display: block;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        [data-testid="stChatInput"] textarea { font-size: 0.95rem; }
+
+        /* Sidebar takes the full width on a phone instead of a
+           fixed desktop-sized panel. */
+        section[data-testid="stSidebar"] { min-width: 0 !important; width: 100% !important; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -365,10 +440,14 @@ st.session_state.setdefault("compare_document_b", "")
 st.session_state.setdefault("document_analytics", {})
 st.session_state.setdefault("retrieval_state", {})
 st.session_state.setdefault("auth_view", "login")
-st.session_state.setdefault("auth_credentials", {"usernames": {}})
 st.session_state.setdefault("user_app_states", {})
 st.session_state.setdefault("active_app_username", None)
 st.session_state.setdefault("auth_method", None)
+# Supabase session tokens for the CURRENT browser tab only — not a store of
+# accounts. The account record itself lives in Supabase, not here.
+st.session_state.setdefault("supabase_session", None)
+st.session_state.setdefault("password_reset_error", None)
+st.session_state.setdefault("upload_just_received", False)
 
 USER_STATE_KEYS = (
     "store",
@@ -466,29 +545,64 @@ def google_user_value(name, default=""):
 
 
 def activate_google_user():
+    """Resolve the Google-authenticated identity (from Streamlit's own OIDC
+    session, st.user) to a PERSISTENT Supabase user id, so a Google login and
+    an email/password login with the same address land on one account.
+
+    Requires a `profiles` table in Supabase (id uuid references auth.users,
+    email text, full_name text) — see the setup notes for the SQL. Uses the
+    service-role client (server-side only secret, never sent to the browser)
+    because looking a user up by email and creating one when missing needs
+    admin privileges that the anon key intentionally doesn't have.
+    """
     email = str(google_user_value("email")).strip().lower()
     if not email:
         st.error("Google did not provide an email address. Please try again.")
         return False
 
-    account = st.session_state.auth_credentials["usernames"].get(email)
-    if account is None:
-        account = {
-            "user_id": f"google::{google_user_value('sub', uuid.uuid4().hex)}",
-            "name": google_user_value("name", email),
-            "email": email,
-            "password": Hasher().hash(uuid.uuid4().hex),
-            "auth_provider": "google",
-        }
-        st.session_state.auth_credentials["usernames"][email] = account
-    else:
-        account.setdefault("user_id", uuid.uuid4().hex)
-        if google_user_value("name"):
-            account["name"] = google_user_value("name")
+    name = google_user_value("name", email)
+    admin = get_supabase_admin_client()
+    if admin is None:
+        st.error(
+            "Google Sign-In needs SUPABASE_SERVICE_ROLE_KEY configured to "
+            "link accounts. Add it to .streamlit/secrets.toml."
+        )
+        return False
+
+    try:
+        existing = (
+            admin.table("profiles")
+            .select("id, full_name")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            user_id = existing.data[0]["id"]
+            display_name = existing.data[0].get("full_name") or name
+        else:
+            created = admin.auth.admin.create_user({
+                "email": email,
+                "email_confirm": True,
+                "password": uuid.uuid4().hex,
+                "user_metadata": {"full_name": name, "auth_provider": "google"},
+            })
+            user_id = created.user.id
+            display_name = name
+            # The `profiles` row is normally populated by a DB trigger on
+            # auth.users insert (see setup notes); upsert here too so login
+            # still works even before that trigger is created.
+            admin.table("profiles").upsert({
+                "id": user_id, "email": email, "full_name": name,
+            }).execute()
+    except Exception as e:
+        st.error("❌ Could not link your Google account to DocuMind.")
+        st.exception(e)
+        return False
 
     st.session_state.current_username = email
-    st.session_state.current_user_id = account["user_id"]
-    st.session_state.current_user = account.get("name", email)
+    st.session_state.current_user_id = user_id
+    st.session_state.current_user = display_name
     st.session_state.auth_method = "google"
     activate_user_state(st.session_state.current_user_id)
     return True
@@ -522,9 +636,52 @@ def normalize_answer(answer: str) -> str:
     return re.sub(r"<br\s*/?>", "\n", answer, flags=re.IGNORECASE)
 
 
-def setup_authentication():
+def get_supabase_client():
+    """Anon-key client: safe for signup/login/password-reset — this is what
+    an untrusted browser session is allowed to do.
+
+    Deliberately NOT @st.cache_resource: sign_in/sign_up mutate this
+    client's internal session state, and a cached instance is shared by
+    every user hitting this Streamlit server process — caching it would let
+    one user's login leak into another's request. A plain client is cheap
+    to construct (no model/network init), so building one per call is fine.
+    """
+    if create_client is None:
+        st.error("Authentication requires the `supabase` package.")
+        st.code("pip install supabase")
+        if SUPABASE_IMPORT_ERROR is not None:
+            st.exception(SUPABASE_IMPORT_ERROR)
+        st.stop()
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
+    except Exception:
+        st.error(
+            "Add SUPABASE_URL and SUPABASE_ANON_KEY to "
+            ".streamlit/secrets.toml."
+        )
+        st.stop()
+    return create_client(url, key)
+
+
+@st.cache_resource
+def get_supabase_admin_client():
+    """Service-role client: only used server-side (Streamlit secrets never
+    reach the browser) for the Google-account-linking lookup in
+    activate_google_user(). Returns None if not configured, so local
+    email/password auth keeps working without it."""
+    if create_client is None:
+        return None
+    url = st.secrets.get("SUPABASE_URL")
+    service_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not service_key:
+        return None
+    return create_client(url, service_key)
+
+
+def get_cookie_controller():
     if AUTH_IMPORT_ERROR is not None:
-        st.error("Authentication requires streamlit-authenticator.")
+        st.error("Session persistence requires streamlit-authenticator.")
         st.code("pip install streamlit-authenticator")
         st.stop()
 
@@ -536,23 +693,82 @@ def setup_authentication():
             st.stop()
         cookie_key = hashlib.sha256(groq_key.encode()).hexdigest()
 
-    return Authenticate(
-        st.session_state.auth_credentials,
-        cookie_name="pdf_intelligence_auth",
-        cookie_key=cookie_key,
-        cookie_expiry_days=30,
-        auto_hash=False,
+    return CookieController(cookie_name="documind_supabase_session", key=cookie_key)
+
+
+def restore_supabase_session(cookie_controller):
+    """Reopening the app / a new tab on the SAME device: the account was
+    never stored locally, so what's restored here is only the SESSION
+    (refresh token) from an encrypted cookie — not the account. Supabase is
+    still asked to confirm/refresh it, so a revoked or expired session
+    correctly falls back to the login screen."""
+    if st.session_state.get("current_user_id"):
+        return True
+
+    refresh_token = None
+    try:
+        refresh_token = cookie_controller.get("documind_supabase_session")
+    except Exception:
+        pass
+    if not refresh_token:
+        return False
+
+    supabase = get_supabase_client()
+    try:
+        result = supabase.auth.refresh_session(refresh_token)
+    except Exception:
+        cookie_controller.delete_cookie()
+        return False
+
+    if not result or not result.session or not result.user:
+        cookie_controller.delete_cookie()
+        return False
+
+    cookie_controller.set(
+        "documind_supabase_session",
+        result.session.refresh_token,
+        max_age=30 * 24 * 60 * 60,
     )
+    _apply_authenticated_supabase_user(result.user, result.session)
+    return True
 
 
-def render_authentication(authenticator):
-    # NEW: if the user is already authenticated (Google session persisted
-    # by Streamlit, or a valid local login already recorded this browser
-    # session), skip drawing the entire login/signup screen — including the
-    # DocuMind icon/title card — and just report success immediately.
+def _apply_authenticated_supabase_user(user, session):
+    full_name = (user.user_metadata or {}).get("full_name") or user.email
+    st.session_state.current_username = user.email
+    st.session_state.current_user_id = user.id
+    st.session_state.current_user = full_name
+    st.session_state.auth_method = "local"
+    st.session_state.supabase_session = {
+        "access_token": session.access_token,
+        "refresh_token": session.refresh_token,
+    }
+    activate_user_state(st.session_state.current_user_id)
+
+
+def render_authentication(cookie_controller):
+    # Supabase redirects back with a recovery link like
+    # ?type=recovery&access_token=...&refresh_token=... — catch that first,
+    # regardless of whatever auth_view was showing before the link was
+    # clicked, and route straight to "set a new password".
+    query_params = st.query_params
+    if query_params.get("type") == "recovery" and query_params.get("access_token"):
+        st.session_state.auth_view = "reset"
+        st.session_state.reset_tokens = {
+            "access_token": query_params.get("access_token"),
+            "refresh_token": query_params.get("refresh_token", ""),
+        }
+        st.query_params.clear()
+
+    # If the user is already authenticated (Google session persisted by
+    # Streamlit, or a valid local Supabase session restored from cookie),
+    # skip drawing the entire login/signup screen — including the DocuMind
+    # icon/title card — and just report success immediately.
     if getattr(st.user, "is_logged_in", False):
         return activate_google_user()
-    if st.session_state.get("authentication_status") is True:
+    if st.session_state.get("current_user_id") and st.session_state.auth_method == "local":
+        return True
+    if st.session_state.auth_view != "reset" and restore_supabase_session(cookie_controller):
         return True
 
     st.markdown(
@@ -666,21 +882,49 @@ def render_authentication(authenticator):
                 st.error("Password must contain at least 8 characters.")
             elif password != confirm_password:
                 st.error("Passwords do not match.")
-            elif normalized_email in st.session_state.auth_credentials["usernames"]:
-                st.error(
-                    "An account with this email already exists. "
-                    "Please log in or use a different email."
-                )
             else:
-                st.session_state.auth_credentials["usernames"][normalized_email] = {
-                    "user_id": uuid.uuid4().hex,
-                    "name": name.strip(),
-                    "email": normalized_email,
-                    "password": Hasher().hash(password),
-                }
-                st.session_state.auth_view = "login"
-                st.success("Account created successfully. Please sign in.")
-                st.rerun()
+                supabase = get_supabase_client()
+                try:
+                    result = supabase.auth.sign_up({
+                        "email": normalized_email,
+                        "password": password,
+                        "options": {"data": {"full_name": name.strip()}},
+                    })
+                except Exception as e:
+                    text = str(e).lower()
+                    if "already" in text or "registered" in text or "exists" in text:
+                        st.error(
+                            "An account with this email already exists. "
+                            "Please log in or use a different email."
+                        )
+                    else:
+                        st.error("❌ Could not create your account.")
+                        st.exception(e)
+                    result = None
+
+                if result is not None:
+                    # Best-effort profile row (a DB trigger should normally
+                    # do this on auth.users insert — see setup notes — this
+                    # is just a safety net if that trigger isn't set up yet).
+                    if result.user is not None:
+                        try:
+                            supabase.table("profiles").upsert({
+                                "id": result.user.id,
+                                "email": normalized_email,
+                                "full_name": name.strip(),
+                            }).execute()
+                        except Exception:
+                            pass
+
+                    st.session_state.auth_view = "login"
+                    if result.session is not None:
+                        st.success("Account created! Signing you in…")
+                    else:
+                        st.success(
+                            "Account created! Check your email to confirm it, "
+                            "then sign in."
+                        )
+                    st.rerun()
 
         with card:
             st.markdown(
@@ -692,51 +936,119 @@ def render_authentication(authenticator):
                 st.rerun()
         return False
 
+    if st.session_state.auth_view == "forgot":
+        with card:
+            st.markdown('<div class="auth-heading">Reset your password</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="auth-subheading">We\'ll email you a reset link</div>',
+                unsafe_allow_html=True,
+            )
+            with st.form("forgot_form"):
+                reset_email = st.text_input("Email")
+                send_reset = st.form_submit_button("Send Reset Link", use_container_width=True)
+
+        if send_reset:
+            normalized_email = reset_email.strip().lower()
+            if not normalized_email:
+                st.error("Please enter your email.")
+            else:
+                supabase = get_supabase_client()
+                try:
+                    redirect_to = st.secrets.get("APP_URL", "")
+                    supabase.auth.reset_password_for_email(
+                        normalized_email,
+                        {"redirect_to": redirect_to} if redirect_to else None,
+                    )
+                except Exception:
+                    pass  # Never reveal whether an email is registered.
+                st.success(
+                    "If an account exists for that email, a reset link is "
+                    "on its way."
+                )
+
+        with card:
+            if st.button("Back to Sign In", use_container_width=True, key="forgot_back"):
+                st.session_state.auth_view = "login"
+                st.rerun()
+        return False
+
+    if st.session_state.auth_view == "reset":
+        with card:
+            st.markdown('<div class="auth-heading">Set a new password</div>', unsafe_allow_html=True)
+            tokens = st.session_state.get("reset_tokens") or {}
+            if not tokens.get("access_token"):
+                st.error("This reset link is invalid or has expired.")
+                if st.button("Back to Sign In", use_container_width=True, key="reset_invalid_back"):
+                    st.session_state.auth_view = "login"
+                    st.rerun()
+                return False
+
+            with st.form("reset_form"):
+                new_password = st.text_input("New Password", type="password")
+                confirm_new_password = st.text_input("Confirm New Password", type="password")
+                submit_reset = st.form_submit_button("Update Password", use_container_width=True)
+
+        if submit_reset:
+            if len(new_password) < 8:
+                st.error("Password must contain at least 8 characters.")
+            elif new_password != confirm_new_password:
+                st.error("Passwords do not match.")
+            else:
+                supabase = get_supabase_client()
+                try:
+                    supabase.auth.set_session(
+                        tokens["access_token"], tokens.get("refresh_token", "")
+                    )
+                    supabase.auth.update_user({"password": new_password})
+                    st.session_state.pop("reset_tokens", None)
+                    st.session_state.auth_view = "login"
+                    st.success("Password updated. Please sign in.")
+                    st.rerun()
+                except Exception as e:
+                    st.error("❌ Could not update your password. Request a new reset link.")
+                    st.exception(e)
+        return False
+
     with card:
         st.markdown('<div class="auth-heading">Welcome back 👋</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="auth-subheading">Sign in to continue</div>',
             unsafe_allow_html=True,
         )
-        try:
-            authenticator.login(
-                location="main",
-                fields={
-                    "Form name": "Sign In",
-                    "Username": "Email",
-                    "Password": "Password",
-                    "Login": "Sign In",
-                },
-                key="pdf_login",
-            )
-        except LoginError:
-            authenticator.cookie_controller.delete_cookie()
-            for key in ("authentication_status", "username", "name", "email", "roles"):
-                st.session_state.pop(key, None)
-            st.warning("Your previous login session expired. Please sign in again.")
-            return False
-
-    if st.session_state.get("authentication_status") is True:
-        authenticated_email = st.session_state.get("username", "")
-        account = st.session_state.auth_credentials["usernames"].get(
-            authenticated_email,
-            {},
+        with st.form("login_form"):
+            login_email = st.text_input("Email")
+            login_password = st.text_input("Password", type="password")
+            submit_login = st.form_submit_button("Sign In", use_container_width=True)
+        forgot_clicked = st.button(
+            "Forgot Password?", key="open_forgot", use_container_width=True
         )
-        account.setdefault("user_id", uuid.uuid4().hex)
-        st.session_state.current_username = authenticated_email
-        st.session_state.current_user_id = account["user_id"]
-        st.session_state.current_user = st.session_state.get("name", "")
-        st.session_state.auth_method = "local"
-        activate_user_state(st.session_state.current_user_id)
-        return True
-    if st.session_state.get("authentication_status") is False:
-        st.error("Incorrect email/username or password.")
-    if (
-        st.session_state.get("authentication_status") is not True
-        and st.session_state.get("active_app_username")
-    ):
-        save_current_user_state()
-        clear_active_user_state()
+
+    if forgot_clicked:
+        st.session_state.auth_view = "forgot"
+        st.rerun()
+
+    if submit_login:
+        normalized_email = login_email.strip().lower()
+        supabase = get_supabase_client()
+        try:
+            result = supabase.auth.sign_in_with_password({
+                "email": normalized_email,
+                "password": login_password,
+            })
+        except Exception:
+            result = None
+
+        if result is None or result.user is None or result.session is None:
+            st.error("Incorrect email or password.")
+        else:
+            cookie_controller.set(
+                "documind_supabase_session",
+                result.session.refresh_token,
+                max_age=30 * 24 * 60 * 60,
+            )
+            _apply_authenticated_supabase_user(result.user, result.session)
+            st.rerun()
+
     with card:
         st.markdown('<div class="auth-divider">OR</div>', unsafe_allow_html=True)
         if st.button("Continue with Google", use_container_width=True, key="google_login"):
@@ -757,10 +1069,16 @@ def render_authentication(authenticator):
     return False
 
 
-def handle_logout(*_args, **_kwargs):
+def handle_logout(cookie_controller):
+    try:
+        get_supabase_client().auth.sign_out()
+    except Exception:
+        pass
+    cookie_controller.delete_cookie()
     save_current_user_state()
     clear_active_user_state()
     st.session_state.auth_method = None
+    st.session_state.supabase_session = None
     for key in ("current_username", "current_user_id", "current_user"):
         st.session_state.pop(key, None)
 
@@ -1227,8 +1545,8 @@ def render_export_buttons(question, answer, sources_list, source_evidence, key):
         )
 
 
-authenticator = setup_authentication()
-if not render_authentication(authenticator):
+cookie_controller = get_cookie_controller()
+if not render_authentication(cookie_controller):
     st.stop()
 
 
@@ -1270,13 +1588,28 @@ with st.sidebar:
     st.divider()
 
     st.markdown("### 📂 Upload Documents")
-    selected_files = st.file_uploader(
+
+    def _handle_file_selection():
+        # Fires the instant Streamlit's server registers the committed
+        # upload (mobile or desktop) and writes straight into
+        # uploaded_files, instead of relying on the next full-body rerun
+        # to notice a stale local `selected_files` variable — that gap is
+        # the actual root cause of needing a second tap on mobile browsers
+        # (see the chat explanation of the fix).
+        files = st.session_state.get("pdf_uploader_widget") or []
+        st.session_state.uploaded_files = files
+        st.session_state.upload_just_received = bool(files)
+
+    st.file_uploader(
         "Choose PDF file(s)",
         type="pdf",
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key="pdf_uploader_widget",
+        on_change=_handle_file_selection,
     )
-    if selected_files:
-        st.session_state.uploaded_files = selected_files
+    if st.session_state.get("upload_just_received"):
+        st.info("📄 File(s) received — processing will start below.")
+        st.session_state.upload_just_received = False
     uploaded_files = st.session_state.uploaded_files
 
     if uploaded_files:
@@ -1348,16 +1681,12 @@ with st.sidebar:
     )
     if st.session_state.auth_method == "google":
         if st.button("Logout", key="google_logout", use_container_width=True):
-            handle_logout()
+            handle_logout(cookie_controller)
             st.logout()
     else:
-        authenticator.logout(
-            "Logout",
-            location="sidebar",
-            key="pdf_logout",
-            use_container_width=True,
-            callback=handle_logout,
-        )
+        if st.button("Logout", key="pdf_logout", use_container_width=True):
+            handle_logout(cookie_controller)
+            st.rerun()
 
 ensure_app_state_defaults()
 
