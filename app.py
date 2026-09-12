@@ -736,8 +736,12 @@ def restore_supabase_session(cookie_controller):
     return True
 
 
-def _apply_authenticated_supabase_user(user, session):
-    full_name = (user.user_metadata or {}).get("full_name") or user.email
+def _apply_authenticated_supabase_user(user, session, profile_full_name=None):
+    full_name = (
+        profile_full_name
+        or (user.user_metadata or {}).get("full_name")
+        or user.email
+    )
     st.session_state.current_username = user.email
     st.session_state.current_user_id = user.id
     st.session_state.current_user = full_name
@@ -957,10 +961,10 @@ def render_authentication(cookie_controller):
             else:
                 supabase = get_supabase_client()
                 try:
-                    redirect_to = st.secrets.get("APP_URL", "")
+                    app_url = st.secrets.get("APP_URL", "")
                     supabase.auth.reset_password_for_email(
                         normalized_email,
-                        {"redirect_to": redirect_to} if redirect_to else None,
+                        options={"redirect_to": app_url},
                     )
                 except Exception:
                     pass  # Never reveal whether an email is registered.
@@ -1044,12 +1048,29 @@ def render_authentication(cookie_controller):
         if result is None or result.user is None or result.session is None:
             st.error("Incorrect email or password.")
         else:
+            profile_full_name = None
+            try:
+                profile = (
+                    supabase.table("profiles")
+                    .select("full_name")
+                    .eq("id", result.user.id)
+                    .limit(1)
+                    .execute()
+                )
+                if profile.data:
+                    profile_full_name = profile.data[0].get("full_name")
+            except Exception:
+                pass
             cookie_controller.set(
                 "documind_supabase_session",
                 result.session.refresh_token,
                 max_age=30 * 24 * 60 * 60,
             )
-            _apply_authenticated_supabase_user(result.user, result.session)
+            _apply_authenticated_supabase_user(
+                result.user,
+                result.session,
+                profile_full_name,
+            )
             st.rerun()
 
     with card:
