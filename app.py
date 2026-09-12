@@ -1036,10 +1036,31 @@ def render_authentication(cookie_manager):
                 except Exception as error:
                     text = str(error).lower()
                     if "already" in text or "registered" in text or "exists" in text:
-                        st.error(
-                            "An account with this email already exists. "
-                            "Please log in or use a different email."
-                        )
+                        try:
+                            app_url = st.secrets.get("APP_URL", "")
+                            if app_url:
+                                supabase.auth.reset_password_for_email(
+                                    normalized_email,
+                                    options={"redirect_to": app_url},
+                                )
+                                st.info(
+                                    "This email already has a DocuMind account. "
+                                    "We sent you a password setup link. After "
+                                    "setting a password, you can use email/password "
+                                    "as well as Continue with Google."
+                                )
+                            else:
+                                st.error(
+                                    "This email already has an account. "
+                                    "Use Continue with Google or Forgot Password "
+                                    "to set an email/password."
+                                )
+                        except Exception as reset_error:
+                            st.error(
+                                "This email already has an account. "
+                                "Use Continue with Google or Forgot Password. "
+                                + format_auth_error(reset_error)
+                            )
                     else:
                         st.error(
                             "❌ Could not create your account: "
@@ -1054,10 +1075,40 @@ def render_authentication(cookie_manager):
                     # account was created in that case.
                     identities = getattr(result.user, "identities", None) if result.user else None
                     if result.user is not None and identities == [] and result.session is None:
-                        st.error(
-                            "An account with this email already exists. "
-                            "Please use Sign In or Forgot Password."
-                        )
+                        # Supabase masks an already-registered email by returning
+                        # an empty identities list. This commonly happens when
+                        # the account was first created through Google in DocuMind.
+                        # Such an account has no user-chosen password, so sending
+                        # the normal "please sign in" message is misleading.
+                        #
+                        # Give the user a direct path to add an email/password
+                        # credential to the SAME Supabase account.
+                        try:
+                            app_url = st.secrets.get("APP_URL", "")
+                            if app_url:
+                                supabase.auth.reset_password_for_email(
+                                    normalized_email,
+                                    options={"redirect_to": app_url},
+                                )
+                                st.info(
+                                    "This email already has a DocuMind account "
+                                    "(possibly created with Google). We sent you "
+                                    "a password setup link. Open it to create a "
+                                    "password, then you can sign in with either "
+                                    "Google or email/password."
+                                )
+                            else:
+                                st.warning(
+                                    "This email already has an account. Use "
+                                    "Continue with Google, or use Forgot Password "
+                                    "to create an email/password login."
+                                )
+                        except Exception as error:
+                            st.error(
+                                "This email already has an account. "
+                                "We could not send the password setup link: "
+                                + format_auth_error(error)
+                            )
                         return False
 
                     profile_saved = True
@@ -1078,15 +1129,7 @@ def render_authentication(cookie_manager):
                     if result.session is not None and result.user is not None:
                         # When Supabase allows immediate sign-in after signup,
                         # persist the same session used by normal login.
-                        try:
-                            set_session_cookie(cookie_manager, result.session.refresh_token)
-                        except Exception:
-                            # Cookie persistence is only for keeping the user
-                            # signed in across reruns/devices. A cookie failure
-                            # must not turn a successful Supabase login into a
-                            # failed login. The current Streamlit session can
-                            # still continue normally.
-                            pass
+                        set_session_cookie(cookie_manager, result.session.refresh_token)
                         _apply_authenticated_supabase_user(
                             result.user,
                             result.session,
@@ -1213,9 +1256,6 @@ def render_authentication(cookie_manager):
 
     if submit_login:
         normalized_email = login_email.strip().lower()
-        if not normalized_email or not login_password:
-            st.error("Please enter both email and password.")
-            return False
         supabase = get_supabase_client()
         try:
             result = supabase.auth.sign_in_with_password({
@@ -1241,12 +1281,7 @@ def render_authentication(cookie_manager):
                     normalized_email,
                     profile_full_name,
                 )
-            try:
-                set_session_cookie(cookie_manager, result.session.refresh_token)
-            except Exception:
-                # Do not fail a valid login just because browser-cookie
-                # persistence is unavailable.
-                pass
+            set_session_cookie(cookie_manager, result.session.refresh_token)
             _apply_authenticated_supabase_user(
                 result.user,
                 result.session,
