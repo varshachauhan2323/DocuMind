@@ -693,8 +693,11 @@ def get_cookie_controller():
             st.stop()
         cookie_key = hashlib.sha256(groq_key.encode()).hexdigest()
 
-    return CookieController(cookie_name="documind_supabase_session", key=cookie_key)
-
+    return CookieController(
+    "documind_supabase_session",
+    cookie_key,
+    30
+)
 
 def restore_supabase_session(cookie_controller):
     """Reopening the app / a new tab on the SAME device: the account was
