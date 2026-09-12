@@ -4,9 +4,12 @@ import os
 import re
 import threading
 import uuid
-from datetime import date
+from base64 import urlsafe_b64encode
+from datetime import date, datetime, timedelta
 
+import extra_streamlit_components as stx
 import streamlit as st
+from cryptography.fernet import Fernet, InvalidToken
 
 # =====================================================
 # PAGE CONFIG (must be the very first Streamlit call)
@@ -60,18 +63,6 @@ except ImportError:
     CrossEncoder = None
 
 try:
-    # CookieController is the one piece of streamlit-authenticator we still
-    # need: an encrypted browser cookie so a Supabase session can survive
-    # closing/reopening the app on the same device. Credential checking
-    # (Authenticate/Hasher) is no longer used — Supabase Auth now owns
-    # signup/login/password hashing/verification.
-    from streamlit_authenticator.controllers import CookieController
-    AUTH_IMPORT_ERROR = None
-except ImportError as error:
-    CookieController = None
-    AUTH_IMPORT_ERROR = error
-
-try:
     from supabase import create_client
     SUPABASE_IMPORT_ERROR = None
 except ImportError as error:
@@ -98,9 +89,7 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {
-        height: 60px;
-        background: #ffffff;
-        border-bottom: 1px solid rgba(148,163,184,0.18);
+                    profile_saved = True
         box-shadow: 0 4px 18px rgba(15,23,42,0.06);
     }
     header[data-testid="stHeader"]::before {
@@ -108,12 +97,19 @@ st.markdown("""
         white-space: pre;
         display: block;
         color: #0f172a;
-        font-size: 0.98rem;
-        font-weight: 750;
+                        except Exception as error:
+                            profile_saved = False
+                            st.warning(
+                                "Your account was created, but the profile could "
+                                "not be saved. Sign-in can still proceed; check "
+                                "the profiles table policy."
+                            )
+                            st.caption(format_auth_error(error))
         line-height: 1;
         padding: 1.1rem 1.05rem;
     }
-    header[data-testid="stHeader"]::after {
+                        if profile_saved:
+                            st.success("Account created! Signing you in…")
         content: "RAG Powered";
         position: absolute;
         right: 8rem;
@@ -443,9 +439,6 @@ st.session_state.setdefault("auth_view", "login")
 st.session_state.setdefault("user_app_states", {})
 st.session_state.setdefault("active_app_username", None)
 st.session_state.setdefault("auth_method", None)
-# Supabase session tokens for the CURRENT browser tab only — not a store of
-# accounts. The account record itself lives in Supabase, not here.
-st.session_state.setdefault("supabase_session", None)
 st.session_state.setdefault("password_reset_error", None)
 st.session_state.setdefault("upload_just_received", False)
 
@@ -679,60 +672,168 @@ def get_supabase_admin_client():
     return create_client(url, service_key)
 
 
-def get_cookie_controller():
-    if AUTH_IMPORT_ERROR is not None:
-        st.error(f"Authentication import failed: {AUTH_IMPORT_ERROR!r}")
-        st.code("pip install streamlit-authenticator")
-        st.stop()
+SESSION_COOKIE_NAME = "documind_supabase_session"
+SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60
 
+
+def get_session_cookie_manager():
+    return stx.CookieManager(key="documind_session_cookie_manager")
+
+
+def get_session_cookie_cipher():
     cookie_key = st.secrets.get("AUTH_COOKIE_KEY")
     if not cookie_key:
-        groq_key = st.secrets.get("GROQ_API_KEY")
-        if not groq_key:
-            st.error("Add AUTH_COOKIE_KEY to .streamlit/secrets.toml.")
-            st.stop()
-        cookie_key = hashlib.sha256(groq_key.encode()).hexdigest()
+        st.error("Add AUTH_COOKIE_KEY to .streamlit/secrets.toml.")
+        st.stop()
+    derived_key = urlsafe_b64encode(hashlib.sha256(cookie_key.encode()).digest())
+    return Fernet(derived_key)
 
-    return CookieController(
-    "documind_supabase_session",
-    cookie_key,
-    30
-)
 
-def restore_supabase_session(cookie_controller):
+def format_auth_error(error):
+    """Return useful auth diagnostics without exposing configured secrets."""
+    message = f"{type(error).__name__}: {error}"
+    for secret_name in (
+        "GROQ_API_KEY",
+        "AUTH_COOKIE_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+    ):
+        secret_value = st.secrets.get(secret_name)
+        if secret_value:
+            message = message.replace(str(secret_value), "[redacted]")
+    message = re.sub(
+        r"\b(access_token|refresh_token|token|password|api_key|client_secret)"
+        r"\s*[:=]\s*[^,\s]+",
+        r"\1=[redacted]",
+        message,
+        flags=re.IGNORECASE,
+    )
+    message = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", "[redacted-token]", message)
+    return message
+
+
+def set_session_cookie(cookie_manager, refresh_token):
+    encrypted_token = get_session_cookie_cipher().encrypt(
+        refresh_token.encode("utf-8")
+    ).decode("ascii")
+    cookie_manager.set(
+        SESSION_COOKIE_NAME,
+        encrypted_token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        expires_at=datetime.now() + timedelta(seconds=SESSION_COOKIE_MAX_AGE),
+        secure=True,
+        same_site="lax",
+    )
+
+
+def get_session_refresh_token(cookie_manager):
+    encrypted_token = cookie_manager.get(SESSION_COOKIE_NAME)
+    if not encrypted_token:
+        return None
+    try:
+        return get_session_cookie_cipher().decrypt(
+            encrypted_token.encode("ascii")
+        ).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError):
+        return None
+
+
+def delete_session_cookie(cookie_manager):
+    """Delete the session cookie only when it actually exists.
+
+    extra_streamlit_components can raise KeyError when delete() is called
+    before the browser-side cookie manager has a cookie with this name.
+    Logout/session recovery should never crash the whole Streamlit app.
+    """
+    try:
+        existing = cookie_manager.get(SESSION_COOKIE_NAME)
+    except Exception:
+        existing = None
+    if not existing:
+        return
+    try:
+        cookie_manager.delete(SESSION_COOKIE_NAME)
+    except Exception:
+        pass
+
+
+def get_profile_full_name(supabase, user_id):
+    clients = [supabase]
+    admin = get_supabase_admin_client()
+    if admin is not None and admin is not supabase:
+        clients.append(admin)
+    for client in clients:
+        try:
+            profile = (
+                client.table("profiles")
+                .select("full_name")
+                .eq("id", user_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            continue
+        if profile.data:
+            return profile.data[0].get("full_name")
+    return None
+
+
+def upsert_profile(supabase, user_id, email, full_name):
+    clients = [supabase]
+    admin = get_supabase_admin_client()
+    if admin is not None and admin is not supabase:
+        clients.append(admin)
+    for client in clients:
+        try:
+            client.table("profiles").upsert({
+                "id": user_id,
+                "email": email,
+                "full_name": full_name,
+            }).execute()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def restore_supabase_session(cookie_manager):
     """Reopening the app / a new tab on the SAME device: the account was
     never stored locally, so what's restored here is only the SESSION
     (refresh token) from an encrypted cookie — not the account. Supabase is
     still asked to confirm/refresh it, so a revoked or expired session
     correctly falls back to the login screen."""
-    if st.session_state.get("current_user_id"):
+    if (
+        st.session_state.get("current_user_id")
+        and st.session_state.get("auth_method") == "local"
+    ):
         return True
 
-    refresh_token = None
-    try:
-        refresh_token = cookie_controller.get("documind_supabase_session")
-    except Exception:
-        pass
+    refresh_token = get_session_refresh_token(cookie_manager)
     if not refresh_token:
         return False
 
     supabase = get_supabase_client()
     try:
         result = supabase.auth.refresh_session(refresh_token)
-    except Exception:
-        cookie_controller.delete_cookie()
+    except Exception as error:
+        delete_session_cookie(cookie_manager)
+        st.warning(
+            "Your saved Supabase session could not be restored. "
+            "Please sign in again."
+        )
+        st.caption(format_auth_error(error))
         return False
 
     if not result or not result.session or not result.user:
-        cookie_controller.delete_cookie()
+        delete_session_cookie(cookie_manager)
         return False
 
-    cookie_controller.set(
-        "documind_supabase_session",
-        result.session.refresh_token,
-        max_age=30 * 24 * 60 * 60,
+    set_session_cookie(cookie_manager, result.session.refresh_token)
+    _apply_authenticated_supabase_user(
+        result.user,
+        result.session,
+        get_profile_full_name(supabase, result.user.id),
     )
-    _apply_authenticated_supabase_user(result.user, result.session)
     return True
 
 
@@ -746,14 +847,10 @@ def _apply_authenticated_supabase_user(user, session, profile_full_name=None):
     st.session_state.current_user_id = user.id
     st.session_state.current_user = full_name
     st.session_state.auth_method = "local"
-    st.session_state.supabase_session = {
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-    }
     activate_user_state(st.session_state.current_user_id)
 
 
-def render_authentication(cookie_controller):
+def render_authentication(cookie_manager):
     # Supabase redirects back with a recovery link like
     # ?type=recovery&access_token=...&refresh_token=... — catch that first,
     # regardless of whatever auth_view was showing before the link was
@@ -766,6 +863,45 @@ def render_authentication(cookie_controller):
             "refresh_token": query_params.get("refresh_token", ""),
         }
         st.query_params.clear()
+    elif query_params.get("token_hash") and query_params.get("type") in {
+        "email",
+        "recovery",
+    }:
+        callback_type = query_params.get("type")
+        try:
+            callback_result = get_supabase_client().auth.verify_otp({
+                "token_hash": query_params.get("token_hash"),
+                "type": callback_type,
+            })
+        except Exception as error:
+            st.error("Authentication callback failed: " + format_auth_error(error))
+        else:
+            if (
+                callback_result
+                and callback_result.session
+                and callback_result.user
+            ):
+                if callback_type == "recovery":
+                    st.session_state.auth_view = "reset"
+                    st.session_state.reset_tokens = {
+                        "access_token": callback_result.session.access_token,
+                        "refresh_token": callback_result.session.refresh_token,
+                    }
+                else:
+                    set_session_cookie(
+                        cookie_manager,
+                        callback_result.session.refresh_token,
+                    )
+                    _apply_authenticated_supabase_user(
+                        callback_result.user,
+                        callback_result.session,
+                        get_profile_full_name(
+                            get_supabase_client(), callback_result.user.id
+                        ),
+                    )
+                st.query_params.clear()
+            else:
+                st.error("Authentication callback returned no active session.")
 
     # If the user is already authenticated (Google session persisted by
     # Streamlit, or a valid local Supabase session restored from cookie),
@@ -775,7 +911,7 @@ def render_authentication(cookie_controller):
         return activate_google_user()
     if st.session_state.get("current_user_id") and st.session_state.auth_method == "local":
         return True
-    if st.session_state.auth_view != "reset" and restore_supabase_session(cookie_controller):
+    if st.session_state.auth_view != "reset" and restore_supabase_session(cookie_manager):
         return True
 
     st.markdown(
@@ -897,41 +1033,74 @@ def render_authentication(cookie_controller):
                         "password": password,
                         "options": {"data": {"full_name": name.strip()}},
                     })
-                except Exception as e:
-                    text = str(e).lower()
+                except Exception as error:
+                    text = str(error).lower()
                     if "already" in text or "registered" in text or "exists" in text:
                         st.error(
                             "An account with this email already exists. "
                             "Please log in or use a different email."
                         )
                     else:
-                        st.error("❌ Could not create your account.")
-                        st.exception(e)
+                        st.error(
+                            "❌ Could not create your account: "
+                            + format_auth_error(error)
+                        )
                     result = None
 
                 if result is not None:
-                    # Best-effort profile row (a DB trigger should normally
-                    # do this on auth.users insert — see setup notes — this
-                    # is just a safety net if that trigger isn't set up yet).
-                    if result.user is not None:
-                        try:
-                            supabase.table("profiles").upsert({
-                                "id": result.user.id,
-                                "email": normalized_email,
-                                "full_name": name.strip(),
-                            }).execute()
-                        except Exception:
-                            pass
+                    # Supabase may intentionally return a user with no session
+                    # and an empty identities list when this email is already
+                    # registered. Do not falsely tell the user that a new
+                    # account was created in that case.
+                    identities = getattr(result.user, "identities", None) if result.user else None
+                    if result.user is not None and identities == [] and result.session is None:
+                        st.error(
+                            "An account with this email already exists. "
+                            "Please use Sign In or Forgot Password."
+                        )
+                        return False
 
-                    st.session_state.auth_view = "login"
-                    if result.session is not None:
+                    profile_saved = True
+                    if result.user is not None:
+                        profile_saved = upsert_profile(
+                            supabase,
+                            result.user.id,
+                            normalized_email,
+                            name.strip(),
+                        )
+                        if not profile_saved:
+                            st.warning(
+                                "Your account was created, but the profile could "
+                                "not be saved. Sign-in can still proceed; check "
+                                "the profiles table policy."
+                            )
+
+                    if result.session is not None and result.user is not None:
+                        # When Supabase allows immediate sign-in after signup,
+                        # persist the same session used by normal login.
+                        try:
+                            set_session_cookie(cookie_manager, result.session.refresh_token)
+                        except Exception:
+                            # Cookie persistence is only for keeping the user
+                            # signed in across reruns/devices. A cookie failure
+                            # must not turn a successful Supabase login into a
+                            # failed login. The current Streamlit session can
+                            # still continue normally.
+                            pass
+                        _apply_authenticated_supabase_user(
+                            result.user,
+                            result.session,
+                            name.strip(),
+                        )
                         st.success("Account created! Signing you in…")
+                        st.rerun()
                     else:
+                        st.session_state.auth_view = "login"
                         st.success(
                             "Account created! Check your email to confirm it, "
                             "then sign in."
                         )
-                    st.rerun()
+                        st.rerun()
 
         with card:
             st.markdown(
@@ -962,16 +1131,22 @@ def render_authentication(cookie_controller):
                 supabase = get_supabase_client()
                 try:
                     app_url = st.secrets.get("APP_URL", "")
+                    if not app_url:
+                        raise RuntimeError("APP_URL is not configured")
                     supabase.auth.reset_password_for_email(
                         normalized_email,
                         options={"redirect_to": app_url},
                     )
-                except Exception:
-                    pass  # Never reveal whether an email is registered.
-                st.success(
-                    "If an account exists for that email, a reset link is "
-                    "on its way."
-                )
+                except Exception as error:
+                    st.error(
+                        "Could not send the password reset email: "
+                        + format_auth_error(error)
+                    )
+                else:
+                    st.success(
+                        "If an account exists for that email, a reset link is "
+                        "on its way."
+                    )
 
         with card:
             if st.button("Back to Sign In", use_container_width=True, key="forgot_back"):
@@ -1011,9 +1186,11 @@ def render_authentication(cookie_controller):
                     st.session_state.auth_view = "login"
                     st.success("Password updated. Please sign in.")
                     st.rerun()
-                except Exception as e:
-                    st.error("❌ Could not update your password. Request a new reset link.")
-                    st.exception(e)
+                except Exception as error:
+                    st.error(
+                        "❌ Could not update your password: "
+                        + format_auth_error(error)
+                    )
         return False
 
     with card:
@@ -1036,36 +1213,40 @@ def render_authentication(cookie_controller):
 
     if submit_login:
         normalized_email = login_email.strip().lower()
+        if not normalized_email or not login_password:
+            st.error("Please enter both email and password.")
+            return False
         supabase = get_supabase_client()
         try:
             result = supabase.auth.sign_in_with_password({
                 "email": normalized_email,
                 "password": login_password,
             })
-        except Exception:
+        except Exception as error:
+            st.error("Sign-in failed: " + format_auth_error(error))
             result = None
 
         if result is None or result.user is None or result.session is None:
-            st.error("Incorrect email or password.")
+            if result is not None:
+                st.error("Sign-in failed: Supabase returned no active session.")
         else:
-            profile_full_name = None
-            try:
-                profile = (
-                    supabase.table("profiles")
-                    .select("full_name")
-                    .eq("id", result.user.id)
-                    .limit(1)
-                    .execute()
+            profile_full_name = get_profile_full_name(supabase, result.user.id)
+            if not profile_full_name:
+                profile_full_name = (result.user.user_metadata or {}).get(
+                    "full_name"
+                ) or normalized_email
+                upsert_profile(
+                    supabase,
+                    result.user.id,
+                    normalized_email,
+                    profile_full_name,
                 )
-                if profile.data:
-                    profile_full_name = profile.data[0].get("full_name")
+            try:
+                set_session_cookie(cookie_manager, result.session.refresh_token)
             except Exception:
+                # Do not fail a valid login just because browser-cookie
+                # persistence is unavailable.
                 pass
-            cookie_controller.set(
-                "documind_supabase_session",
-                result.session.refresh_token,
-                max_age=30 * 24 * 60 * 60,
-            )
             _apply_authenticated_supabase_user(
                 result.user,
                 result.session,
@@ -1098,11 +1279,10 @@ def handle_logout(cookie_controller):
         get_supabase_client().auth.sign_out()
     except Exception:
         pass
-    cookie_controller.delete_cookie()
+    delete_session_cookie(cookie_controller)
     save_current_user_state()
     clear_active_user_state()
     st.session_state.auth_method = None
-    st.session_state.supabase_session = None
     for key in ("current_username", "current_user_id", "current_user"):
         st.session_state.pop(key, None)
 
@@ -1569,8 +1749,8 @@ def render_export_buttons(question, answer, sources_list, source_evidence, key):
         )
 
 
-cookie_controller = get_cookie_controller()
-if not render_authentication(cookie_controller):
+session_cookie_manager = get_session_cookie_manager()
+if not render_authentication(session_cookie_manager):
     st.stop()
 
 
@@ -1705,11 +1885,11 @@ with st.sidebar:
     )
     if st.session_state.auth_method == "google":
         if st.button("Logout", key="google_logout", use_container_width=True):
-            handle_logout(cookie_controller)
+            handle_logout(session_cookie_manager)
             st.logout()
     else:
         if st.button("Logout", key="pdf_logout", use_container_width=True):
-            handle_logout(cookie_controller)
+            handle_logout(session_cookie_manager)
             st.rerun()
 
 ensure_app_state_defaults()
