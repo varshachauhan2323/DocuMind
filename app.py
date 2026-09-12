@@ -65,7 +65,7 @@ try:
     # closing/reopening the app on the same device. Credential checking
     # (Authenticate/Hasher) is no longer used — Supabase Auth now owns
     # signup/login/password hashing/verification.
-    from streamlit_authenticator import CookieController
+    from streamlit_authenticator.controllers import CookieController
     AUTH_IMPORT_ERROR = None
 except ImportError as error:
     CookieController = None
