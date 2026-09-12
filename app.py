@@ -190,6 +190,22 @@ st.markdown("""
     }
     .made-by { text-align: center; color: #64748b; font-size: 0.85rem; padding: 10px 0; }
     .made-by b { color: #2563eb; }
+    div[data-testid="stFileUploader"] {
+        border: 1px dashed rgba(37,99,235,.28); border-radius: 16px;
+        background: rgba(255,255,255,.55); padding: .25rem;
+    }
+    div[data-testid="stSelectbox"] > div, div[data-testid="stMultiSelect"] > div {
+        border-radius: 10px;
+    }
+    div[data-testid="stExpander"] {
+        border-radius: 14px; border: 1px solid rgba(148,163,184,.22);
+        background: rgba(255,255,255,.55);
+    }
+    [data-testid="stChatMessage"] {
+        border-radius: 16px;
+    }
+    .stAlert { border-radius: 12px; }
+    .stProgress > div > div { border-radius: 999px; }
     .sidebar-user-card {
         border: 1px solid rgba(148,163,184,0.28);
         border-radius: 12px;
@@ -917,97 +933,158 @@ def render_authentication(cookie_manager):
     st.markdown(
         """
         <style>
+            .auth-hero {
+                min-height: 560px;
+                padding: 2.4rem 2.1rem;
+                border-radius: 28px;
+                background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(238,242,255,.72));
+                border: 1px solid rgba(99,102,241,.15);
+                box-shadow: 0 24px 70px rgba(15,23,42,.10);
+                display: flex; flex-direction: column; justify-content: center;
+            }
+            .auth-hero-badge {
+                display: inline-block; width: fit-content;
+                padding: .38rem .68rem; border-radius: 999px;
+                background: rgba(37,99,235,.08); color: #2563eb;
+                border: 1px solid rgba(37,99,235,.14);
+                font-size: .68rem; font-weight: 800; letter-spacing: .09em;
+                margin-bottom: 1.2rem;
+            }
+            .auth-hero-title {
+                color: #0f172a; font-size: 3rem; line-height: 1.02;
+                font-weight: 850; letter-spacing: -1.8px; margin-bottom: 1rem;
+            }
+            .auth-hero-title span { color: #2563eb; }
+            .auth-hero-text {
+                color: #475569; font-size: 1rem; line-height: 1.65;
+                max-width: 510px; margin-bottom: 1.5rem;
+            }
+            .auth-feature-list { display: grid; gap: .8rem; }
+            .auth-feature {
+                display: flex; align-items: center; gap: .85rem; padding: .75rem .85rem;
+                border-radius: 14px; background: rgba(255,255,255,.62);
+                border: 1px solid rgba(148,163,184,.18);
+            }
+            .auth-feature-icon {
+                width: 34px; height: 34px; border-radius: 10px; flex: 0 0 34px;
+                display: grid; place-items: center; background: rgba(37,99,235,.09);
+                color: #2563eb; font-size: 1rem; font-weight: 800;
+            }
+            .auth-feature b { display:block; color:#0f172a; font-size:.9rem; margin-bottom:2px; }
+            .auth-feature small { display:block; color:#64748b; font-size:.76rem; line-height:1.35; }
+            .auth-trust {
+                margin-top: 1.35rem; color:#64748b; font-size:.74rem;
+                text-align:center;
+            }
+            .auth-mini-badge {
+                width: fit-content; margin: .65rem auto 1.25rem; padding: .32rem .62rem;
+                border-radius:999px; background:#f8fafc; color:#64748b;
+                border:1px solid rgba(148,163,184,.22); font-size:.68rem;
+            }
             .auth-heading {
-                text-align: center;
-                color: #0f172a;
-                margin: 0.25rem 0 0.2rem;
-                font-size: 1.85rem;
-                font-weight: 750;
+                text-align: center; color: #0f172a; margin: .25rem 0 .2rem;
+                font-size: 1.75rem; font-weight: 800; letter-spacing:-.5px;
             }
             .auth-brand {
-                text-align: center;
-                color: #0f172a;
-                font-size: 2rem;
-                font-weight: 800;
-                line-height: 1.1;
+                text-align: center; color: #0f172a; font-size: 2rem;
+                font-weight: 850; line-height: 1.1; letter-spacing:-.7px;
             }
             .auth-descriptor {
-                text-align: center;
-                color: #64748b;
-                font-size: 0.85rem;
-                margin: 0.25rem 0 1.1rem;
+                text-align: center; color: #64748b; font-size: .78rem;
+                margin: .28rem 0 0;
             }
             .auth-subheading {
-                text-align: center;
-                color: #64748b;
-                margin: 0 0 1.25rem;
-                font-size: 0.98rem;
+                text-align: center; color: #64748b; margin: 0 0 1.05rem;
+                font-size: .92rem; line-height:1.45;
             }
-            .auth-icon {
-                text-align: center;
-                font-size: 2rem;
-                margin-bottom: 0.15rem;
+            .auth-icon { text-align:center; font-size:1.9rem; margin-bottom:.1rem; }
+            div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) {
+                padding: 1.7rem 1.8rem 1.55rem;
+                border-radius: 28px; background: rgba(255,255,255,.88);
+                border: 1px solid rgba(148,163,184,.24);
+                box-shadow: 0 24px 70px rgba(15,23,42,.10);
             }
             div[data-testid="stForm"] {
-                border: 1px solid rgba(148,163,184,0.32);
-                border-radius: 16px;
-                padding: 1.25rem 1.35rem 1.35rem;
-                background: rgba(255,255,255,0.76);
-                box-shadow: 0 16px 36px rgba(15,23,42,0.08);
+                border: 1px solid rgba(148,163,184,.22); border-radius: 16px;
+                padding: 1.05rem 1.1rem 1.15rem; background: rgba(248,250,252,.7);
+                box-shadow: none;
             }
-            div[data-testid="stForm"] input {
-                border-radius: 9px;
-                background: #ffffff;
+            div[data-testid="stForm"] input { border-radius: 10px; background:#fff; }
+            div[data-testid="stForm"] label { font-size:.82rem; font-weight:650; color:#334155; }
+            div[data-testid="stForm"] button, div[data-testid="stButton"] button {
+                min-height: 2.7rem; border-radius: 10px; font-weight: 650;
             }
-            div[data-testid="stForm"] button,
-            div[data-testid="stButton"] button {
-                min-height: 2.65rem;
-                border-radius: 9px;
-                font-weight: 600;
+            div[data-testid="stForm"] button[kind="primary"] {
+                background: linear-gradient(135deg,#2563eb,#4f46e5); color:#fff;
+                border: 0; box-shadow: 0 8px 18px rgba(37,99,235,.20);
             }
             .auth-divider {
-                display: flex;
-                align-items: center;
-                gap: 0.7rem;
-                color: #94a3b8;
-                font-size: 0.78rem;
-                letter-spacing: 0.08em;
-                margin: 1.1rem 0;
+                display:flex; align-items:center; gap:.7rem; color:#94a3b8; font-size:.72rem;
+                letter-spacing:.12em; margin:1rem 0;
             }
-            .auth-divider::before,
-            .auth-divider::after {
-                content: "";
-                height: 1px;
-                flex: 1;
-                background: rgba(148,163,184,0.35);
+            .auth-divider::before,.auth-divider::after { content:""; height:1px; flex:1; background:rgba(148,163,184,.3); }
+            .auth-footnote { text-align:center; color:#64748b; margin-top:.85rem; font-size:.82rem; }
+            .auth-note {
+                margin: .75rem 0; padding: .7rem .8rem; border-radius: 12px;
+                background: #f8fafc; border: 1px solid rgba(148,163,184,.18);
+                color:#64748b; font-size:.76rem; line-height:1.5; text-align:center;
             }
-            .auth-footnote {
-                text-align: center;
-                color: #64748b;
-                margin-top: 1rem;
-                font-size: 0.9rem;
+            @media (max-width: 900px) {
+                .auth-hero { min-height: 0; padding:1.6rem; margin-bottom:1rem; }
+                .auth-hero-title { font-size:2.25rem; }
+            }
+            @media (max-width: 768px) {
+                div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-child(2) {
+                    padding:1.25rem 1rem; border-radius:20px;
+                }
+                .auth-hero-title { font-size:2rem; }
+                .auth-hero-text { font-size:.9rem; }
             }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    left, card, right = st.columns([1, 1.15, 1])
+    left, card = st.columns([1.05, 0.95], gap="large")
+
+    with left:
+        st.markdown(
+            """
+            <div class="auth-hero">
+                <div class="auth-hero-badge">✦ AI-POWERED PDF WORKSPACE</div>
+                <div class="auth-hero-title">Your documents.<br><span>Your answers.</span></div>
+                <div class="auth-hero-text">
+                    Upload PDFs, ask questions, compare documents, and get
+                    grounded answers with page-level citations.
+                </div>
+                <div class="auth-feature-list">
+                    <div class="auth-feature"><div class="auth-feature-icon">⌕</div><div><b>Ask naturally</b><small>Chat with your PDFs using plain language.</small></div></div>
+                    <div class="auth-feature"><div class="auth-feature-icon">◫</div><div><b>Compare documents</b><small>Find differences and shared insights quickly.</small></div></div>
+                    <div class="auth-feature"><div class="auth-feature-icon">✓</div><div><b>Grounded answers</b><small>See the source document and exact page.</small></div></div>
+                </div>
+                <div class="auth-trust">🔒 Your workspace is separated by account</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     with card:
         st.markdown('<div class="auth-icon">📚</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="auth-brand">DocuMind</div>'
-            '<div class="auth-descriptor">PDF Intelligence Assistant</div>',
+            '<div class="auth-descriptor">RAG-powered PDF Intelligence Assistant</div>',
             unsafe_allow_html=True,
         )
+        st.markdown('<div class="auth-mini-badge">Secure workspace • Google or Email</div>', unsafe_allow_html=True)
 
     if st.session_state.auth_view == "signup":
         with card:
             st.markdown('<div class="auth-heading">Create your account</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="auth-subheading">Join DocuMind</div>',
+                '<div class="auth-subheading">Create your secure workspace in seconds.</div>',
                 unsafe_allow_html=True,
             )
+            st.markdown('<div class="auth-note">Use the same email you use for Google if you want both sign-in methods on one DocuMind account.</div>', unsafe_allow_html=True)
             with st.form("signup_form"):
                 name = st.text_input("Full Name")
                 email = st.text_input("Email")
@@ -1109,6 +1186,31 @@ def render_authentication(cookie_manager):
                                 "We could not send the password setup link: "
                                 + format_auth_error(error)
                             )
+
+                        # Keep the user on the same screen, but give them an
+                        # explicit next step instead of making them use the
+                        # browser/back arrow to reach Sign In.
+                        st.markdown(
+                            '<div class="auth-footnote">Already have this account?</div>',
+                            unsafe_allow_html=True,
+                        )
+                        action_col1, action_col2 = st.columns(2)
+                        with action_col1:
+                            if st.button(
+                                "Sign In",
+                                use_container_width=True,
+                                key="existing_account_signin",
+                            ):
+                                st.session_state.auth_view = "login"
+                                st.rerun()
+                        with action_col2:
+                            if st.button(
+                                "Forgot Password",
+                                use_container_width=True,
+                                key="existing_account_forgot",
+                            ):
+                                st.session_state.auth_view = "forgot"
+                                st.rerun()
                         return False
 
                     profile_saved = True
@@ -1239,9 +1341,10 @@ def render_authentication(cookie_manager):
     with card:
         st.markdown('<div class="auth-heading">Welcome back 👋</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="auth-subheading">Sign in to continue</div>',
+            '<div class="auth-subheading">Access your PDFs, conversations, and saved workspace.</div>',
             unsafe_allow_html=True,
         )
+        st.markdown('<div class="auth-note">Sign in with your DocuMind email/password, or continue securely with Google.</div>', unsafe_allow_html=True)
         with st.form("login_form"):
             login_email = st.text_input("Email")
             login_password = st.text_input("Password", type="password")
