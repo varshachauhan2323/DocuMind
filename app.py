@@ -1148,31 +1148,10 @@ def render_authentication(cookie_manager):
                 except Exception as error:
                     text = str(error).lower()
                     if "already" in text or "registered" in text or "exists" in text:
-                        try:
-                            app_url = st.secrets.get("APP_URL", "")
-                            if app_url:
-                                supabase.auth.reset_password_for_email(
-                                    normalized_email,
-                                    options={"redirect_to": app_url},
-                                )
-                                st.info(
-                                    "This email already has a DocuMind account. "
-                                    "We sent you a password setup link. After "
-                                    "setting a password, you can use email/password "
-                                    "as well as Continue with Google."
-                                )
-                            else:
-                                st.error(
-                                    "This email already has an account. "
-                                    "Use Continue with Google or Forgot Password "
-                                    "to set an email/password."
-                                )
-                        except Exception as reset_error:
-                            st.error(
-                                "This email already has an account. "
-                                "Use Continue with Google or Forgot Password. "
-                                + format_auth_error(reset_error)
-                            )
+                        st.warning(
+                            "This email already has a DocuMind account. "
+                            "Please use Sign In, Continue with Google, or Forgot Password."
+                        )
                     else:
                         st.error(
                             "❌ Could not create your account: "
@@ -1195,32 +1174,12 @@ def render_authentication(cookie_manager):
                         #
                         # Give the user a direct path to add an email/password
                         # credential to the SAME Supabase account.
-                        try:
-                            app_url = st.secrets.get("APP_URL", "")
-                            if app_url:
-                                supabase.auth.reset_password_for_email(
-                                    normalized_email,
-                                    options={"redirect_to": app_url},
-                                )
-                                st.info(
-                                    "This email already has a DocuMind account "
-                                    "(possibly created with Google). We sent you "
-                                    "a password setup link. Open it to create a "
-                                    "password, then you can sign in with either "
-                                    "Google or email/password."
-                                )
-                            else:
-                                st.warning(
-                                    "This email already has an account. Use "
-                                    "Continue with Google, or use Forgot Password "
-                                    "to create an email/password login."
-                                )
-                        except Exception as error:
-                            st.error(
-                                "This email already has an account. "
-                                "We could not send the password setup link: "
-                                + format_auth_error(error)
-                            )
+                        st.warning(
+                            "This email already has a DocuMind account "
+                            "(possibly created with Google). Use Sign In or "
+                            "Continue with Google. If you need to create a "
+                            "password for this account, use Forgot Password."
+                        )
 
                         # Keep the user on the same screen, but give them an
                         # explicit next step instead of making them use the
