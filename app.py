@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 
 import extra_streamlit_components as stx
 import streamlit as st
+import streamlit.components.v1 as components
 from cryptography.fernet import Fernet, InvalidToken
 
 # =====================================================
@@ -867,6 +868,40 @@ def _apply_authenticated_supabase_user(user, session, profile_full_name=None):
 
 
 def render_authentication(cookie_manager):
+    # Supabase's default recovery email uses the implicit flow and redirects
+    # back with auth tokens in the URL fragment (#access_token=...).
+    # Streamlit's server-side st.query_params cannot see URL fragments, so
+    # capture the fragment in the browser and turn it into normal query
+    # parameters before the Python auth handler runs.
+    components.html(
+        """
+        <script>
+        (function () {
+            try {
+                const hash = window.parent.location.hash || window.location.hash || '';
+                if (!hash || !hash.includes('access_token=')) return;
+
+                const params = new URLSearchParams(hash.substring(1));
+                const allowed = ['access_token', 'refresh_token', 'type', 'expires_in', 'expires_at', 'token_type'];
+                const query = new URLSearchParams();
+                allowed.forEach(function (key) {
+                    const value = params.get(key);
+                    if (value) query.set(key, value);
+                });
+
+                if (query.get('access_token') && query.get('type') === 'recovery') {
+                    const base = window.parent.location.pathname;
+                    window.parent.location.replace(base + '?' + query.toString());
+                }
+            } catch (e) {
+                console.error('DocuMind recovery callback error:', e);
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
     # Supabase redirects back with a recovery link like
     # ?type=recovery&access_token=...&refresh_token=... — catch that first,
     # regardless of whatever auth_view was showing before the link was
