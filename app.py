@@ -1020,40 +1020,64 @@ def _apply_authenticated_supabase_user(user, session, profile_full_name=None):
     activate_user_state(st.session_state.current_user_id)
 
 
-def render_authentication(cookie_manager):
-    # Supabase's default recovery email uses the implicit flow and redirects
-    # back with auth tokens in the URL fragment (#access_token=...).
-    # Streamlit's server-side st.query_params cannot see URL fragments, so
-    # capture the fragment in the browser and turn it into normal query
-    # parameters before the Python auth handler runs.
-    components.html(
-        """
-        <script>
-        (function () {
-            try {
-                const hash = window.parent.location.hash || window.location.hash || '';
-                if (!hash || !hash.includes('access_token=')) return;
+def capture_recovery_hash_fragment():
+    """Supabase's default recovery email uses the implicit flow and
+    redirects back with auth tokens in the URL FRAGMENT
+    (#access_token=...&type=recovery). Fragments are never sent in the
+    HTTP request, so Streamlit's server-side st.query_params can never see
+    them — the only way to get at them is to run JavaScript in the
+    browser. This must run before the rest of render_authentication() so
+    the recovery callback is detected no matter which auth_view (login,
+    signup, forgot) the user was on when they clicked the email link.
 
-                const params = new URLSearchParams(hash.substring(1));
-                const allowed = ['access_token', 'refresh_token', 'type', 'expires_in', 'expires_at', 'token_type'];
-                const query = new URLSearchParams();
+    Uses st.iframe — Streamlit's current, non-deprecated way to embed raw
+    HTML/JS (added in Streamlit 1.56). Falls back to the older
+    components.v1.html only if st.iframe isn't available in this
+    Streamlit version, so this keeps working either way.
+    """
+    script_html = """
+    <script>
+    (function () {
+        function tryRedirect(win) {
+            try {
+                var hash = win.location.hash || '';
+                if (!hash || hash.indexOf('access_token=') === -1) return false;
+
+                var params = new URLSearchParams(hash.substring(1));
+                if (params.get('type') !== 'recovery' || !params.get('access_token')) {
+                    return false;
+                }
+
+                var allowed = ['access_token', 'refresh_token', 'type', 'expires_in', 'expires_at', 'token_type'];
+                var query = new URLSearchParams();
                 allowed.forEach(function (key) {
-                    const value = params.get(key);
+                    var value = params.get(key);
                     if (value) query.set(key, value);
                 });
 
-                if (query.get('access_token') && query.get('type') === 'recovery') {
-                    const base = window.parent.location.pathname;
-                    window.parent.location.replace(base + '?' + query.toString());
-                }
+                var base = win.location.pathname;
+                win.location.replace(base + '?' + query.toString());
+                return true;
             } catch (e) {
-                console.error('DocuMind recovery callback error:', e);
+                return false;
             }
-        })();
-        </script>
-        """,
-        height=0,
-    )
+        }
+        // Try the outermost frame first (handles an extra level of
+        // nesting some hosts add), then fall back to the immediate
+        // parent. Both are safe no-ops if the hash isn't a recovery link.
+        if (tryRedirect(window.top)) return;
+        tryRedirect(window.parent);
+    })();
+    </script>
+    """
+    if hasattr(st, "iframe"):
+        st.iframe(script_html, height=0)
+    else:
+        components.html(script_html, height=0)
+
+
+def render_authentication(cookie_manager):
+    capture_recovery_hash_fragment()
 
     # Supabase redirects back with a recovery link like
     # ?type=recovery&access_token=...&refresh_token=... — catch that first,
