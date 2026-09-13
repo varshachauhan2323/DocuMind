@@ -90,7 +90,6 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {
-                    profile_saved = True
         box-shadow: 0 4px 18px rgba(15,23,42,0.06);
     }
     header[data-testid="stHeader"]::before {
@@ -98,19 +97,10 @@ st.markdown("""
         white-space: pre;
         display: block;
         color: #0f172a;
-                        except Exception as error:
-                            profile_saved = False
-                            st.warning(
-                                "Your account was created, but the profile could "
-                                "not be saved. Sign-in can still proceed; check "
-                                "the profiles table policy."
-                            )
-                            st.caption(format_auth_error(error))
         line-height: 1;
         padding: 1.1rem 1.05rem;
     }
-                        if profile_saved:
-                            st.success("Account created! Signing you in…")
+    header[data-testid="stHeader"]::after {
         content: "RAG Powered";
         position: absolute;
         right: 8rem;
@@ -813,6 +803,66 @@ def upsert_profile(supabase, user_id, email, full_name):
     return False
 
 
+def find_user_id_by_email(admin, email):
+    """Look up an existing Supabase user id for `email` via the profiles
+    table (service-role client only). Returns None if not found or if the
+    admin client isn't configured."""
+    if admin is None:
+        return None
+    try:
+        existing = (
+            admin.table("profiles")
+            .select("id")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    if existing.data:
+        return existing.data[0]["id"]
+    return None
+
+
+def add_password_to_existing_account(admin, user_id, password, full_name):
+    """Add an email/password credential to an ALREADY-EXISTING Supabase
+    user (e.g. one created via Google) without creating a duplicate user
+    and without ever overwriting a password the user already set.
+
+    Returns a tuple (status, detail):
+      "linked"       -> password was set; detail is the updated user
+      "has_password" -> this account already has an email/password
+                         identity; detail is None (caller must NOT touch
+                         the password and must NOT suggest Forgot Password
+                         as a way to "convert" the account)
+      "error"        -> detail is the exception that was raised
+    """
+    try:
+        current = admin.auth.admin.get_user_by_id(user_id)
+    except Exception as error:
+        return "error", error
+
+    identities = (current.user.identities or []) if current and current.user else []
+    already_has_password = any(
+        identity.provider == "email" for identity in identities
+    )
+    if already_has_password:
+        return "has_password", None
+
+    try:
+        updated = admin.auth.admin.update_user_by_id(
+            user_id,
+            {
+                "password": password,
+                "user_metadata": {"full_name": full_name},
+            },
+        )
+    except Exception as error:
+        return "error", error
+
+    return "linked", updated
+
+
 def restore_supabase_session(cookie_manager):
     """Reopening the app / a new tab on the SAME device: the account was
     never stored locally, so what's restored here is only the SESSION
@@ -1149,9 +1199,16 @@ def render_authentication(cookie_manager):
                     text = str(error).lower()
                     if "already" in text or "registered" in text or "exists" in text:
                         st.warning(
-                            "This email already has a DocuMind account. "
-                            "Please use Sign In, Continue with Google, or Forgot Password."
+                            "An account with this email already exists. "
+                            "Please Sign In."
                         )
+                        if st.button(
+                            "Sign In",
+                            use_container_width=True,
+                            key="signup_exception_signin",
+                        ):
+                            st.session_state.auth_view = "login"
+                            st.rerun()
                     else:
                         st.error(
                             "❌ Could not create your account: "
@@ -1167,44 +1224,115 @@ def render_authentication(cookie_manager):
                     identities = getattr(result.user, "identities", None) if result.user else None
                     if result.user is not None and identities == [] and result.session is None:
                         # Supabase masks an already-registered email by returning
-                        # an empty identities list. This commonly happens when
-                        # the account was first created through Google in DocuMind.
-                        # Such an account has no user-chosen password, so sending
-                        # the normal "please sign in" message is misleading.
-                        #
-                        # Give the user a direct path to add an email/password
-                        # credential to the SAME Supabase account.
-                        st.warning(
-                            "This email already has a DocuMind account "
-                            "(possibly created with Google). Use Sign In or "
-                            "Continue with Google. If you need to create a "
-                            "password for this account, use Forgot Password."
-                        )
+                        # an empty identities list, instead of an error, when
+                        # this email is already registered. This is the ONLY
+                        # signal we get from the anon-key sign_up call — it
+                        # does not tell us whether the existing account is
+                        # Google-only (CASE 2, safe to add a password to) or
+                        # already has a password (CASE 3, must not be
+                        # touched). Resolve that ambiguity with the
+                        # service-role client before doing anything else.
+                        admin = get_supabase_admin_client()
+                        existing_user_id = find_user_id_by_email(admin, normalized_email)
 
-                        # Keep the user on the same screen, but give them an
-                        # explicit next step instead of making them use the
-                        # browser/back arrow to reach Sign In.
+                        if admin is not None and existing_user_id:
+                            status, detail = add_password_to_existing_account(
+                                admin, existing_user_id, password, name.strip()
+                            )
+
+                            if status == "linked":
+                                # Same Supabase user id throughout — no
+                                # duplicate account was created, and Google
+                                # sign-in for this user is untouched.
+                                upsert_profile(
+                                    admin, existing_user_id, normalized_email, name.strip()
+                                )
+                                try:
+                                    sign_in_result = supabase.auth.sign_in_with_password({
+                                        "email": normalized_email,
+                                        "password": password,
+                                    })
+                                except Exception:
+                                    sign_in_result = None
+
+                                if (
+                                    sign_in_result is not None
+                                    and sign_in_result.session is not None
+                                    and sign_in_result.user is not None
+                                ):
+                                    set_session_cookie(
+                                        cookie_manager, sign_in_result.session.refresh_token
+                                    )
+                                    _apply_authenticated_supabase_user(
+                                        sign_in_result.user,
+                                        sign_in_result.session,
+                                        name.strip(),
+                                    )
+                                    st.success(
+                                        "Password set! Signing you in — Continue "
+                                        "with Google will still work too."
+                                    )
+                                    st.rerun()
+                                else:
+                                    st.session_state.auth_view = "login"
+                                    st.success(
+                                        "Password set for your account. You can "
+                                        "now sign in with your email and "
+                                        "password, or Continue with Google."
+                                    )
+                                    st.rerun()
+                                return False
+
+                            if status == "has_password":
+                                # CASE 3: a real, existing email/password
+                                # account. Do not touch the password and do
+                                # not point at Forgot Password as a way to
+                                # "claim" it.
+                                st.warning(
+                                    "An account with this email already exists. "
+                                    "Please Sign In."
+                                )
+                                if st.button(
+                                    "Sign In",
+                                    use_container_width=True,
+                                    key="existing_account_signin",
+                                ):
+                                    st.session_state.auth_view = "login"
+                                    st.rerun()
+                                return False
+
+                            # status == "error": fall through to the generic
+                            # message below rather than guessing.
+                            st.error(
+                                "❌ Could not set a password for this account: "
+                                + format_auth_error(detail)
+                            )
+                            return False
+
+                        # No service-role key configured, or no matching
+                        # profile found — we cannot safely tell CASE 2 apart
+                        # from CASE 3 from here, and must not touch any
+                        # password without that check. This is still not a
+                        # "forgot password" situation, so say so plainly.
+                        st.warning(
+                            "This email already has a DocuMind account. Adding "
+                            "an email/password sign-in method to an existing "
+                            "Google account requires SUPABASE_SERVICE_ROLE_KEY "
+                            "to be configured. In the meantime, use Continue "
+                            "with Google to sign in, or Sign In if you already "
+                            "set a password."
+                        )
                         st.markdown(
                             '<div class="auth-footnote">Already have this account?</div>',
                             unsafe_allow_html=True,
                         )
-                        action_col1, action_col2 = st.columns(2)
-                        with action_col1:
-                            if st.button(
-                                "Sign In",
-                                use_container_width=True,
-                                key="existing_account_signin",
-                            ):
-                                st.session_state.auth_view = "login"
-                                st.rerun()
-                        with action_col2:
-                            if st.button(
-                                "Forgot Password",
-                                use_container_width=True,
-                                key="existing_account_forgot",
-                            ):
-                                st.session_state.auth_view = "forgot"
-                                st.rerun()
+                        if st.button(
+                            "Sign In",
+                            use_container_width=True,
+                            key="existing_account_signin_noadmin",
+                        ):
+                            st.session_state.auth_view = "login"
+                            st.rerun()
                         return False
 
                     profile_saved = True
