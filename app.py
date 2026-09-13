@@ -1070,10 +1070,7 @@ def capture_recovery_hash_fragment():
     })();
     </script>
     """
-    if hasattr(st, "iframe"):
-        st.iframe(script_html, height=1)
-    else:
-        components.html(script_html, height=0)
+    st.iframe(script_html, height=1)
 
 
 def render_authentication(cookie_manager):
