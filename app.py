@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 
 import extra_streamlit_components as stx
 import streamlit as st
+import streamlit.components.v1 as components
 from cryptography.fernet import Fernet, InvalidToken
 
 # =====================================================
@@ -207,243 +208,75 @@ st.markdown("""
     .sidebar-user-name { color: #0f172a; font-size: 0.92rem; font-weight: 650; }
     .sidebar-brand { color: #0f172a; font-size: 1.18rem; font-weight: 800; line-height: 1.2; }
     .sidebar-descriptor { color: #64748b; font-size: 0.76rem; margin-top: 2px; }
+    @media (max-width: 640px) {
+        header[data-testid="stHeader"]::before { font-size: 0.92rem; padding-left: 0.65rem; }
+        header[data-testid="stHeader"]::after { right: 2.9rem; font-size: 0.56rem; padding: 0.28rem 0.4rem; }
+    }
     hr { border-color: rgba(148,163,184,0.25); }
 
     /* =====================================================
        MOBILE RESPONSIVENESS (320px–768px)
-       Keep desktop styling intact; only override dimensions/layout
-       that otherwise cause clipping, overlap, or horizontal scroll.
+       Generic, structural rules only — no branding/color
+       changes, no touching desktop layout above 768px.
        ===================================================== */
-    html, body, .stApp {
-        max-width: 100%;
-        overflow-x: hidden !important;
-    }
+
+    /* Never let anything force horizontal scroll of the page. */
+    html, body, .stApp { max-width: 100vw; overflow-x: hidden; }
 
     @media (max-width: 768px) {
-        /* ----- Streamlit page chrome ----- */
-        header[data-testid="stHeader"] {
-            min-height: 3.25rem !important;
-            height: 3.25rem !important;
-            overflow: hidden !important;
-        }
-        header[data-testid="stHeader"]::before {
-            content: "📚  DocuMind" !important;
-            font-size: 0.95rem !important;
-            font-weight: 750 !important;
-            line-height: 1 !important;
-            padding: 1.05rem 3.2rem 0.9rem 0.8rem !important;
-            white-space: nowrap !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-            max-width: calc(100vw - 4rem) !important;
-        }
-        header[data-testid="stHeader"]::after {
-            display: none !important;
-            content: none !important;
-        }
-
-        [data-testid="stMainBlockContainer"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
-            padding: 1rem 0.75rem 5rem !important;
-        }
-
-        [data-testid="stAppViewContainer"],
-        [data-testid="stAppViewContainer"] > .main,
-        [data-testid="stMain"] {
-            max-width: 100% !important;
-            min-width: 0 !important;
-            overflow-x: hidden !important;
-        }
-
-        /* ----- Columns: stack on phones, but do not let children
-           retain desktop minimum widths. ----- */
+        /* Every st.columns(...) row (auth card ratio, quick-action
+           buttons, info cards, compare-mode selectors) stacks to a
+           single column instead of squeezing into narrow slivers. */
         div[data-testid="stHorizontalBlock"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
             flex-direction: column !important;
-            gap: 0.75rem !important;
         }
         div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
             width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
             flex: 1 1 100% !important;
-        }
-        div[data-testid="stColumn"] > div {
-            max-width: 100% !important;
             min-width: 0 !important;
         }
 
-        /* ----- Main cards / typography ----- */
-        .hero-container {
-            width: 100% !important;
-            box-sizing: border-box !important;
-            padding: 1rem 1rem 1.1rem !important;
-            border-radius: 16px !important;
-            margin-bottom: 0.6rem !important;
-        }
-        .hero-title {
-            font-size: clamp(1.45rem, 7vw, 1.8rem) !important;
-            line-height: 1.12 !important;
-            letter-spacing: -0.4px !important;
-            overflow-wrap: anywhere !important;
-        }
-        .hero-subtitle { font-size: 0.94rem !important; line-height: 1.45 !important; }
-        .hero-description { font-size: 0.86rem !important; line-height: 1.5 !important; }
-        .hero-capabilities { font-size: 0.68rem !important; line-height: 1.55 !important; }
+        .hero-container { padding: 1rem 1.1rem 1.2rem; border-radius: 16px; }
+        .hero-title { font-size: 1.65rem; letter-spacing: -0.5px; }
+        .hero-subtitle { font-size: 0.95rem; }
+        .hero-description { font-size: 0.88rem; }
+        .hero-capabilities { font-size: 0.68rem; }
 
-        .welcome-card {
-            width: 100% !important;
-            box-sizing: border-box !important;
-            padding: 1.25rem 1rem !important;
-            border-radius: 16px !important;
-        }
-        .welcome-title { font-size: 1.35rem !important; line-height: 1.2 !important; }
-        .welcome-text { font-size: 0.92rem !important; line-height: 1.55 !important; }
-        .info-card { min-height: 0 !important; padding: 1rem !important; box-sizing: border-box !important; }
-        .info-title { font-size: 1rem !important; }
-        .info-text { font-size: 0.88rem !important; line-height: 1.5 !important; }
+        .welcome-card { padding: 22px 16px; border-radius: 16px; }
+        .welcome-title { font-size: 1.4rem; }
+        .welcome-text { font-size: 0.95rem; }
 
-        /* ----- Forms, uploader, selects, buttons ----- */
-        div[data-testid="stForm"],
-        div[data-testid="stFileUploader"],
-        div[data-testid="stSelectbox"],
-        div[data-testid="stMultiSelect"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
-            box-sizing: border-box !important;
+        .info-card { min-height: 0; padding: 16px; }
+        .info-title { font-size: 1.05rem; }
+        .info-text { font-size: 0.9rem; }
+
+        /* Touch targets: buttons and inputs comfortably tappable. */
+        .stButton button, div[data-testid="stForm"] button {
+            min-height: 44px;
+            font-size: 0.95rem;
+            width: 100%;
         }
-        div[data-testid="stForm"] { padding: 0.9rem !important; }
-        .stButton button,
-        div[data-testid="stForm"] button {
-            min-height: 44px !important;
-            width: 100% !important;
-            max-width: 100% !important;
-            font-size: 0.92rem !important;
-            white-space: normal !important;
-        }
-        .stTextInput input,
-        .stTextArea textarea,
-        .stSelectbox div[data-baseweb="select"],
-        .stMultiSelect div[data-baseweb="select"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-height: 44px !important;
-            box-sizing: border-box !important;
-            font-size: 0.94rem !important;
-        }
-        div[data-testid="stFileUploader"] section {
-            max-width: 100% !important;
-            min-width: 0 !important;
+        div[data-testid="stForm"] { padding: 1rem 1rem 1.1rem; }
+        .stTextInput input, .stSelectbox div[data-baseweb="select"] {
+            min-height: 44px;
+            font-size: 0.95rem;
         }
 
-        /* ----- Chat ----- */
-        [data-testid="stChatMessage"],
-        [data-testid="stChatMessageContent"] {
-            max-width: 100% !important;
-            min-width: 0 !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
+        /* Chat messages, citations, and any wide block (tables,
+           retrieval-detail dumps) scroll within themselves instead of
+           blowing out the page width. */
+        [data-testid="stChatMessage"] { max-width: 100%; }
+        [data-testid="stChatMessageContent"] { word-break: break-word; }
+        .stMarkdown table, div[data-testid="stExpander"] {
+            display: block;
+            max-width: 100%;
+            overflow-x: auto;
         }
-        [data-testid="stChatInput"] {
-            width: calc(100% - 0.25rem) !important;
-            max-width: calc(100% - 0.25rem) !important;
-            margin: 0 auto !important;
-            border-radius: 14px !important;
-            box-sizing: border-box !important;
-        }
-        [data-testid="stChatInput"] textarea {
-            font-size: 0.94rem !important;
-            min-height: 44px !important;
-            max-width: 100% !important;
-        }
+        [data-testid="stChatInput"] textarea { font-size: 0.95rem; }
 
-        /* ----- Wide content: keep scrolling local to the component ----- */
-        .stMarkdown table,
-        div[data-testid="stExpander"] {
-            display: block !important;
-            width: 100% !important;
-            max-width: 100% !important;
-            overflow-x: auto !important;
-            -webkit-overflow-scrolling: touch !important;
-        }
-        pre, code {
-            max-width: 100% !important;
-            overflow-x: auto !important;
-            white-space: pre-wrap !important;
-            overflow-wrap: anywhere !important;
-        }
-
-        /* PDF/embed/object/iframe content must stay inside the phone.
-           If a PDF viewer is embedded, its own content can scroll inside
-           the viewer rather than expanding the Streamlit page. */
-        iframe,
-        embed,
-        object {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
-            box-sizing: border-box !important;
-        }
-        iframe[src*="pdf"],
-        embed[type="application/pdf"],
-        object[type="application/pdf"] {
-            max-width: 100vw !important;
-            overflow: hidden !important;
-        }
-
-        /* Images and generated content cannot exceed the viewport. */
-        img, svg, video, canvas {
-            max-width: 100% !important;
-            height: auto !important;
-        }
-
-        /* Metrics and expanders should never preserve desktop widths. */
-        [data-testid="stMetric"],
-        div[data-testid="stExpander"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
-            box-sizing: border-box !important;
-        }
-        [data-testid="stMetric"] { padding: 0.8rem !important; }
-
-        /* Sidebar: keep it as Streamlit's mobile drawer instead of forcing
-           a full-width sidebar that pushes the main page sideways. */
-        section[data-testid="stSidebar"] {
-            width: min(86vw, 320px) !important;
-            min-width: min(86vw, 320px) !important;
-            max-width: min(86vw, 320px) !important;
-        }
-        section[data-testid="stSidebar"] > div {
-            width: 100% !important;
-            max-width: 100% !important;
-            min-width: 0 !important;
-        }
-
-        /* Prevent fixed/floating third-party controls from blocking the
-           chat box or important content at the bottom of the screen. */
-        [data-testid="stStatusWidget"],
-        [data-testid="stDecoration"] {
-            max-width: 100vw !important;
-        }
-    }
-
-    @media (max-width: 420px) {
-        header[data-testid="stHeader"]::before {
-            font-size: 0.88rem !important;
-            padding-left: 0.65rem !important;
-        }
-        [data-testid="stMainBlockContainer"] {
-            padding-left: 0.55rem !important;
-            padding-right: 0.55rem !important;
-        }
-        .hero-container { padding-left: 0.85rem !important; padding-right: 0.85rem !important; }
-        .hero-title { font-size: 1.4rem !important; }
+        /* Sidebar takes the full width on a phone instead of a
+           fixed desktop-sized panel. */
+        section[data-testid="stSidebar"] { min-width: 0 !important; width: 100% !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1205,35 +1038,36 @@ def capture_recovery_hash_fragment():
     script_html = """
     <script>
     (function () {
-        function tryRedirect(win) {
+        function transferRecoveryTokens() {
             try {
-                var hash = win.location.hash || '';
-                if (!hash || hash.indexOf('access_token=') === -1) return false;
+                var hash = window.top.location.hash || '';
+                if (!hash) return false;
 
                 var params = new URLSearchParams(hash.substring(1));
-                if (params.get('type') !== 'recovery' || !params.get('access_token')) {
+                var accessToken = params.get('access_token');
+                var refreshToken = params.get('refresh_token');
+                if (params.get('type') !== 'recovery' || !accessToken || !refreshToken) {
                     return false;
                 }
 
-                var allowed = ['access_token', 'refresh_token', 'type', 'expires_in', 'expires_at', 'token_type'];
                 var query = new URLSearchParams();
-                allowed.forEach(function (key) {
-                    var value = params.get(key);
-                    if (value) query.set(key, value);
-                });
+                query.set('type', 'recovery');
+                query.set('access_token', accessToken);
+                query.set('refresh_token', refreshToken);
 
-                var base = win.location.pathname;
-                win.location.replace(base + '?' + query.toString());
+                // Streamlit's iframe sandbox can block programmatic top-level
+                // navigation. Use the same-origin history API instead, then
+                // notify the app so it processes the new query parameters.
+                var recoveryUrl = window.top.location.pathname + '?' + query.toString();
+                window.top.history.replaceState({}, '', recoveryUrl);
+                window.top.dispatchEvent(new PopStateEvent('popstate'));
+                window.top.dispatchEvent(new Event('hashchange'));
                 return true;
             } catch (e) {
                 return false;
             }
         }
-        // Try the outermost frame first (handles an extra level of
-        // nesting some hosts add), then fall back to the immediate
-        // parent. Both are safe no-ops if the hash isn't a recovery link.
-        if (tryRedirect(window.top)) return;
-        tryRedirect(window.parent);
+        transferRecoveryTokens();
     })();
     </script>
     """
@@ -1634,7 +1468,9 @@ def render_authentication(cookie_manager):
                     supabase.auth.update_user({"password": new_password})
                     st.session_state.pop("reset_tokens", None)
                     st.session_state.auth_view = "login"
-                    st.success("Password updated. Please sign in.")
+                    st.session_state.password_reset_success = (
+                        "Password updated successfully. Please sign in with your new password."
+                    )
                     st.rerun()
                 except Exception as error:
                     st.error(
@@ -1644,6 +1480,8 @@ def render_authentication(cookie_manager):
         return False
 
     with card:
+        if st.session_state.pop("password_reset_success", None):
+            st.success("Password updated successfully. Please sign in with your new password.")
         st.markdown('<div class="auth-heading">Welcome back 👋</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="auth-subheading">Access your PDFs, conversations, and saved workspace.</div>',
