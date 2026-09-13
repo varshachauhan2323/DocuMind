@@ -863,6 +863,109 @@ def add_password_to_existing_account(admin, user_id, password, full_name):
     return "linked", updated
 
 
+def handle_existing_account_on_signup(supabase, normalized_email, password, name, cookie_manager):
+    """Shared handling for the moment Sign Up discovers that
+    `normalized_email` already has a Supabase account — regardless of
+    WHICH signal Supabase used to say so (some project configs raise an
+    exception on sign_up for an existing email; others return a masked
+    user with identities == [] and no session). Both signals land here so
+    a Google-only account gets the SAME chance to add a password.
+
+    Resolves to exactly one of:
+      CASE 2 - Google-only account  -> add a password via the Admin API,
+               same Supabase user id, Google login untouched, then sign
+               the user in.
+      CASE 3 - account already has an email/password credential -> do
+               NOT touch the password; tell the user to Sign In.
+      Admin not configured / no matching profile -> cannot safely tell
+               CASE 2 from CASE 3, so no password is touched.
+
+    Never calls reset_password_for_email() - Forgot Password stays a
+    fully separate, user-initiated flow.
+    """
+    admin = get_supabase_admin_client()
+    existing_user_id = find_user_id_by_email(admin, normalized_email)
+
+    if admin is not None and existing_user_id:
+        status, detail = add_password_to_existing_account(
+            admin, existing_user_id, password, name.strip()
+        )
+
+        if status == "linked":
+            # Same Supabase user id throughout - no duplicate account was
+            # created, and Google sign-in for this user is untouched.
+            upsert_profile(admin, existing_user_id, normalized_email, name.strip())
+            try:
+                sign_in_result = supabase.auth.sign_in_with_password({
+                    "email": normalized_email,
+                    "password": password,
+                })
+            except Exception:
+                sign_in_result = None
+
+            if (
+                sign_in_result is not None
+                and sign_in_result.session is not None
+                and sign_in_result.user is not None
+            ):
+                set_session_cookie(cookie_manager, sign_in_result.session.refresh_token)
+                _apply_authenticated_supabase_user(
+                    sign_in_result.user,
+                    sign_in_result.session,
+                    name.strip(),
+                )
+                st.success(
+                    "Your email/password login has been enabled. Signing you in…"
+                )
+                st.rerun()
+            else:
+                st.session_state.auth_view = "login"
+                st.success(
+                    "Your email/password login has been enabled. You can now "
+                    "sign in with your email and password, or Continue with "
+                    "Google."
+                )
+                st.rerun()
+            return
+
+        if status == "has_password":
+            # CASE 3: a real, existing email/password account. Do not
+            # touch the password and do not point at Forgot Password as a
+            # way to "claim" it.
+            st.warning(
+                "An account with this email already exists. Please Sign In."
+            )
+            if st.button(
+                "Sign In", use_container_width=True, key="existing_account_signin"
+            ):
+                st.session_state.auth_view = "login"
+                st.rerun()
+            return
+
+        # status == "error": don't guess - report it plainly.
+        st.error(
+            "❌ Could not set a password for this account: "
+            + format_auth_error(detail)
+        )
+        return
+
+    # No service-role key configured, or no matching profile found - we
+    # cannot safely tell CASE 2 apart from CASE 3 from here, and must not
+    # touch any password without that check.
+    st.warning(
+        "This email already has a DocuMind account. Adding an email/password "
+        "sign-in method to an existing Google account requires "
+        "SUPABASE_SERVICE_ROLE_KEY to be configured. In the meantime, use "
+        "Continue with Google to sign in, or Sign In if you already set a "
+        "password."
+    )
+    if st.button(
+        "Sign In", use_container_width=True, key="existing_account_signin_noadmin"
+    ):
+        st.session_state.auth_view = "login"
+        st.rerun()
+
+
 def restore_supabase_session(cookie_manager):
     """Reopening the app / a new tab on the SAME device: the account was
     never stored locally, so what's restored here is only the SESSION
@@ -1198,17 +1301,9 @@ def render_authentication(cookie_manager):
                 except Exception as error:
                     text = str(error).lower()
                     if "already" in text or "registered" in text or "exists" in text:
-                        st.warning(
-                            "An account with this email already exists. "
-                            "Please Sign In."
+                        handle_existing_account_on_signup(
+                            supabase, normalized_email, password, name, cookie_manager
                         )
-                        if st.button(
-                            "Sign In",
-                            use_container_width=True,
-                            key="signup_exception_signin",
-                        ):
-                            st.session_state.auth_view = "login"
-                            st.rerun()
                     else:
                         st.error(
                             "❌ Could not create your account: "
@@ -1223,116 +1318,16 @@ def render_authentication(cookie_manager):
                     # account was created in that case.
                     identities = getattr(result.user, "identities", None) if result.user else None
                     if result.user is not None and identities == [] and result.session is None:
-                        # Supabase masks an already-registered email by returning
-                        # an empty identities list, instead of an error, when
-                        # this email is already registered. This is the ONLY
-                        # signal we get from the anon-key sign_up call — it
-                        # does not tell us whether the existing account is
-                        # Google-only (CASE 2, safe to add a password to) or
-                        # already has a password (CASE 3, must not be
-                        # touched). Resolve that ambiguity with the
-                        # service-role client before doing anything else.
-                        admin = get_supabase_admin_client()
-                        existing_user_id = find_user_id_by_email(admin, normalized_email)
-
-                        if admin is not None and existing_user_id:
-                            status, detail = add_password_to_existing_account(
-                                admin, existing_user_id, password, name.strip()
-                            )
-
-                            if status == "linked":
-                                # Same Supabase user id throughout — no
-                                # duplicate account was created, and Google
-                                # sign-in for this user is untouched.
-                                upsert_profile(
-                                    admin, existing_user_id, normalized_email, name.strip()
-                                )
-                                try:
-                                    sign_in_result = supabase.auth.sign_in_with_password({
-                                        "email": normalized_email,
-                                        "password": password,
-                                    })
-                                except Exception:
-                                    sign_in_result = None
-
-                                if (
-                                    sign_in_result is not None
-                                    and sign_in_result.session is not None
-                                    and sign_in_result.user is not None
-                                ):
-                                    set_session_cookie(
-                                        cookie_manager, sign_in_result.session.refresh_token
-                                    )
-                                    _apply_authenticated_supabase_user(
-                                        sign_in_result.user,
-                                        sign_in_result.session,
-                                        name.strip(),
-                                    )
-                                    st.success(
-                                        "Password set! Signing you in — Continue "
-                                        "with Google will still work too."
-                                    )
-                                    st.rerun()
-                                else:
-                                    st.session_state.auth_view = "login"
-                                    st.success(
-                                        "Password set for your account. You can "
-                                        "now sign in with your email and "
-                                        "password, or Continue with Google."
-                                    )
-                                    st.rerun()
-                                return False
-
-                            if status == "has_password":
-                                # CASE 3: a real, existing email/password
-                                # account. Do not touch the password and do
-                                # not point at Forgot Password as a way to
-                                # "claim" it.
-                                st.warning(
-                                    "An account with this email already exists. "
-                                    "Please Sign In."
-                                )
-                                if st.button(
-                                    "Sign In",
-                                    use_container_width=True,
-                                    key="existing_account_signin",
-                                ):
-                                    st.session_state.auth_view = "login"
-                                    st.rerun()
-                                return False
-
-                            # status == "error": fall through to the generic
-                            # message below rather than guessing.
-                            st.error(
-                                "❌ Could not set a password for this account: "
-                                + format_auth_error(detail)
-                            )
-                            return False
-
-                        # No service-role key configured, or no matching
-                        # profile found — we cannot safely tell CASE 2 apart
-                        # from CASE 3 from here, and must not touch any
-                        # password without that check. This is still not a
-                        # "forgot password" situation, so say so plainly.
-                        st.warning(
-                            "This email already has a DocuMind account. Adding "
-                            "an email/password sign-in method to an existing "
-                            "Google account requires SUPABASE_SERVICE_ROLE_KEY "
-                            "to be configured. In the meantime, use Continue "
-                            "with Google to sign in, or Sign In if you already "
-                            "set a password."
+                        # Supabase masks an already-registered email by
+                        # returning an empty identities list, instead of an
+                        # exception, when this project's auth settings are
+                        # configured that way. Route it through the same
+                        # handler as the exception path above so a
+                        # Google-only account gets the same chance to add a
+                        # password no matter which signal Supabase used.
+                        handle_existing_account_on_signup(
+                            supabase, normalized_email, password, name, cookie_manager
                         )
-                        st.markdown(
-                            '<div class="auth-footnote">Already have this account?</div>',
-                            unsafe_allow_html=True,
-                        )
-                        if st.button(
-                            "Sign In",
-                            use_container_width=True,
-                            key="existing_account_signin_noadmin",
-                        ):
-                            st.session_state.auth_view = "login"
-                            st.rerun()
                         return False
 
                     profile_saved = True
