@@ -42,7 +42,7 @@ Finding one specific answer can require:
 - comparing sections manually
 - verifying whether an AI-generated answer is actually supported
 
-Traditional PDF chatbots often solve only the last part — **chatting**.
+Traditional PDF chatbots often solve only the last part - **chatting**.
 
 DocuMind focuses on the complete workflow:
 
